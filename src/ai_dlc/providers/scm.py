@@ -186,6 +186,64 @@ class GitHubSCM:
         value = self.api(f"repos/{self.repo}/contents/{path}?ref={sha}")
         return tomllib.loads(base64.b64decode(value["content"]).decode())
 
+    def _ci_check_runs_or_statuses(self, sha):
+        check_runs = []
+        try:
+            check_data = self.api(f"repos/{self.repo}/commits/{sha}/check-runs")
+            check_runs = check_data.get("check_runs", [])
+        except RuntimeError:
+            pass
+
+        statuses = []
+        combined_state = None
+        try:
+            status_data = self.api(f"repos/{self.repo}/commits/{sha}/status")
+            combined_state = status_data.get("state")
+            statuses = status_data.get("statuses", [])
+        except RuntimeError:
+            pass
+
+        if not check_runs and not statuses:
+            raise ValueError(f"No CI check runs or commit statuses found for merge SHA {sha}")
+
+        for cr in check_runs:
+            status = cr.get("status")
+            conclusion = cr.get("conclusion")
+            name = cr.get("name", "unnamed")
+            if status != "completed":
+                raise ValueError(f"CI check run '{name}' is not completed: {status}")
+            if conclusion not in {"success", "neutral", "skipped"}:
+                raise ValueError(f"CI check run '{name}' failed with conclusion: {conclusion}")
+
+        if statuses and combined_state != "success":
+            failing = [s.get("context", "unknown") for s in statuses if s.get("state") != "success"]
+            raise ValueError(
+                f"CI commit status state is '{combined_state}'; failing: {', '.join(failing)}"
+            )
+
+        return {
+            "sha": sha,
+            "source": "checks_and_statuses",
+            "check_runs": [
+                {
+                    "name": cr.get("name"),
+                    "status": cr.get("status"),
+                    "conclusion": cr.get("conclusion"),
+                }
+                for cr in check_runs
+            ],
+            "statuses": [
+                {
+                    "context": s.get("context"),
+                    "state": s.get("state"),
+                    "description": s.get("description"),
+                }
+                for s in statuses
+            ],
+            "check_runs_count": len(check_runs),
+            "statuses_count": len(statuses),
+        }
+
     def ci(self, sha):
         workflow = self.scm.get("workflow", "verify.yml")
         workflow_path = (
@@ -194,9 +252,21 @@ class GitHubSCM:
             else ".github/workflows/" + workflow
         )
         workflow_name = workflow_path.rsplit("/", 1)[1]
-        runs = self.api(
-            f"repos/{self.repo}/actions/workflows/{workflow_name}/runs?head_sha={sha}&branch={self.branch}&event=push&status=success&per_page=100"
-        )["workflow_runs"]
+        runs = None
+        if workflow and workflow.lower() not in {"none", "disabled", "checks"}:
+            try:
+                runs = self.api(
+                    f"repos/{self.repo}/actions/workflows/{workflow_name}/runs?head_sha={sha}&branch={self.branch}&event=push&status=success&per_page=100"
+                ).get("workflow_runs", [])
+            except RuntimeError as exc:
+                err_str = str(exc).lower()
+                if any(term in err_str for term in ["404", "not found", "disabled", "actions"]):
+                    return self._ci_check_runs_or_statuses(sha)
+                raise
+
+        if runs is None:
+            return self._ci_check_runs_or_statuses(sha)
+
         matching = [
             r
             for r in runs
@@ -209,7 +279,10 @@ class GitHubSCM:
             and r.get("repository", {}).get("full_name") == self.repo
         ]
         if not matching:
-            raise ValueError("No trusted successful target-branch workflow for merge SHA")
+            try:
+                return self._ci_check_runs_or_statuses(sha)
+            except ValueError:
+                raise ValueError("No trusted successful target-branch workflow for merge SHA")
         run = matching[0]
         config = self.file_at("ai-dlc.toml", sha)
         mise = self.file_at(".mise.toml", sha)

@@ -329,11 +329,13 @@ def _canonical_url_kind(source: str, scheme: str, suffix: str) -> str:
 def _lexically_safe_source(source: str) -> bool:
     if not source or source != source.strip():
         return False
-    if any(
-        chr(int(match.group(1), 16)) in _URI_ENCODED_DELIMITERS
-        for match in _PERCENT_ENCODED_BYTE.finditer(source)
-    ):
-        return False
+    is_file_url = source.lower().startswith("file://")
+    for match in _PERCENT_ENCODED_BYTE.finditer(source):
+        decoded = chr(int(match.group(1), 16))
+        if is_file_url and decoded == "@":
+            continue
+        if decoded in _URI_ENCODED_DELIMITERS:
+            return False
     for character in source:
         codepoint = ord(character)
         category = unicodedata.category(character)

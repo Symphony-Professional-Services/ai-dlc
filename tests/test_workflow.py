@@ -528,6 +528,121 @@ def test_github_scm_rejects_wrong_workflow_and_sha(tmp_path):
         scm.ci("correct")
 
 
+def test_github_scm_falls_back_to_check_runs_and_statuses_on_actions_404(tmp_path):
+    from ai_dlc.providers.scm import GitHubSCM
+
+    scm = GitHubSCM(tmp_path, {"scm": {"repository": "a/b"}})
+
+    def api(path):
+        if "actions/workflows" in path:
+            raise RuntimeError("gh: Not Found (HTTP 404)")
+        if "check-runs" in path:
+            return {
+                "check_runs": [
+                    {"name": "jenkins/build", "status": "completed", "conclusion": "success"},
+                    {
+                        "name": "SonarQube Code Analysis",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ]
+            }
+        if "status" in path:
+            return {
+                "state": "success",
+                "statuses": [
+                    {
+                        "context": "continuous-integration/jenkins/branch",
+                        "state": "success",
+                        "description": "Build ok",
+                    },
+                    {
+                        "context": "sonarqube",
+                        "state": "success",
+                        "description": "Quality gate passed",
+                    },
+                ],
+            }
+        raise AssertionError(f"Unexpected path: {path}")
+
+    scm.api = api
+    result = scm.ci("sha-123")
+    assert result["sha"] == "sha-123"
+    assert result["source"] == "checks_and_statuses"
+    assert result["check_runs_count"] == 2
+    assert result["statuses_count"] == 2
+
+
+def test_github_scm_check_runs_rejects_failing_or_incomplete(tmp_path):
+    from ai_dlc.providers.scm import GitHubSCM
+
+    scm = GitHubSCM(tmp_path, {"scm": {"repository": "a/b", "workflow": "none"}})
+    scm.api = lambda path: (
+        {"check_runs": [{"name": "jenkins/build", "status": "in_progress", "conclusion": None}]}
+        if "check-runs" in path
+        else {"state": "pending", "statuses": []}
+    )
+
+    with pytest.raises(ValueError, match="not completed"):
+        scm.ci("sha-123")
+
+    scm.api = lambda path: (
+        {"check_runs": [{"name": "SonarQube", "status": "completed", "conclusion": "failure"}]}
+        if "check-runs" in path
+        else {"state": "failure", "statuses": []}
+    )
+
+    with pytest.raises(ValueError, match="failed with conclusion: failure"):
+        scm.ci("sha-123")
+
+
+def test_github_scm_statuses_rejects_failing_status(tmp_path):
+    from ai_dlc.providers.scm import GitHubSCM
+
+    scm = GitHubSCM(tmp_path, {"scm": {"repository": "a/b", "workflow": "none"}})
+    scm.api = lambda path: (
+        {"check_runs": []}
+        if "check-runs" in path
+        else {
+            "state": "failure",
+            "statuses": [{"context": "jenkins", "state": "failure", "description": "Failed"}],
+        }
+    )
+
+    with pytest.raises(ValueError, match="state is 'failure'"):
+        scm.ci("sha-123")
+
+
+def test_finish_gates_can_be_customized_in_config(tmp_path, monkeypatch):
+    from ai_dlc.work import workflow
+    from ai_dlc.work.workflow import WorkService
+
+    work(tmp_path)
+    tracker = Tracker()
+
+    class SCM:
+        def __init__(self, root, config):
+            pass
+
+        def merged(self, reference):
+            return {"sha": "custom-merge", "pr": {"merged": True}}
+
+    monkeypatch.setattr(workflow, "GitHubSCM", SCM)
+
+    service = WorkService(
+        tmp_path,
+        {"gates": {"finish": ["pr-merged"]}},
+        state_path=tmp_path / "state",
+        registry=Registry(tracker),
+    )
+    service.publish("one")
+    result = service.finish("one")
+    assert result["status"] == "completed"
+    assert "pr-merged" in result["evidence"]
+    assert "ci-green" not in result["evidence"]
+    assert "specification-current" not in result["evidence"]
+
+
 def matrix_receipt_scm(tmp_path, *, tamper_second=False, missing_second=False):
     import base64
     import json

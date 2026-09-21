@@ -885,12 +885,11 @@ class WorkService:
 
     def finish(self, work_id, handoff: str | None = None, learning: str | None = None):
         work = self.load(work_id, True)
-        gates = list(
-            dict.fromkeys(
-                ["pr-merged", "ci-green", "specification-current"]
-                + list(self.config.get("gates", {}).get("finish", []))
-            )
-        )
+        configured_gates = self.config.get("gates", {}).get("finish")
+        if configured_gates:
+            gates = list(dict.fromkeys(configured_gates))
+        else:
+            gates = ["pr-merged", "ci-green", "specification-current"]
         evidence = {}
         blocked = []
         merged = None
@@ -898,6 +897,11 @@ class WorkService:
         for gate in gates:
             try:
                 if gate == "specification-current":
+                    if work["requires_spec"] and not merged:
+                        scm = scm or self.role(
+                            work, "scm", lambda: GitHubSCM(self.root, self.config)
+                        )
+                        merged = merged or scm.merged(work["artifacts"].get("pr", ""))
                     evidence[gate] = (
                         self.role(work, "specs", lambda: OpenSpecProvider(self.root)).current(
                             work, revision=merged["sha"] if merged else ""
