@@ -1,0 +1,35 @@
+schema = 1
+id = "documentation-evidence-content-binding"
+title = "Concurrent pull requests always conflict on .ai-dlc/documentation/current.json"
+scope = "Store documentation evidence per work item and bind each decision to the content of its target and mapped sources instead of one exact base commit, so disjoint branches merge in either order without rewriting evidence while changed reviewed content still fails the gate. Replaces DI-02's base-mismatch rule from documentation-evidence-merge-freshness."
+requires_spec = true
+spec_reason = "Changes observable documentation gate and recording behavior and replaces requirement DI-02."
+acceptance = [
+    "Two branches with disjoint changes and valid documentation evidence merge in either order without a manual conflict or a re-recorded disposition.",
+    "Evidence still binds to content: a changed mapped document or source without a current decision fails the gate and is named.",
+    "The number of manual documentation-evidence commands per delivery is recorded against the delivery path baseline.",
+]
+reviewed = true
+depends_on = []
+requirements = [
+    "DI-02",
+]
+
+[providers]
+specs = "openspec"
+tracker = "github-issues"
+knowledge = "obsidian"
+scm = "github"
+deploy = "none"
+
+[artifacts]
+spec = "openspec/changes/archive/2026-09-18-documentation-evidence-content-binding"
+tracker = "146"
+branch = "work/content-binding-impl"
+
+[bindings]
+specs = "a8f8f91947ed105b68ab6c04da0b24fa96e4c95b3d0b07f7292fa0e13c6e20e0"
+scm = "2bd3db7c9bf390039ca6ad39d0d227d92339372aaf837a8b2a06250c5c12503d"
+deploy = "f5f42b95ae065ca5c0c7c3b9a6bc2ceee0d34e42b505a711d3cbb66b44d0cf2d"
+knowledge = "28ca66580437daadd63929abd63c2bedd34b5e0212f2d94a9c8fcd653e711852"
+tracker = "d5d6f3842ab3093be5c24d87bfb69956d742a766fde59ec7a1918bc36aee8b8b"
